@@ -981,6 +981,17 @@ my %services = (
             %{$variables{'service-common-defaults'}},
         },
     },
+    'route53' => {
+        'updateable' => undef,
+        'update'     => \&nic_route53_update,
+        'examples'   => \&nic_route53_examples,
+        'variables'  => {
+            %{$variables{'service-common-defaults'}},
+            'aws-secret-access-key' => setv(T_STRING, 0, 0, $ENV{'AWS_SECRET_ACCESS_KEY'}, undef),
+            'aws-access-key-id' => setv(T_STRING, 0, 0, $ENV{'AWS_ACCESS_KEY_ID'}, undef),
+            'aws-region' => setv(T_STRING, 0, 0, 'us-east-1', undef)
+        }
+    },
 );
 $variables{'merged'} = {
     map({ %{$services{$_}{'variables'}} } keys(%services)),
@@ -2467,7 +2478,6 @@ sub encode_base64 ($;$) {
 ######################################################################
 sub load_sha1_support {
     my $why         = shift;
-    my $sha1_loaded = eval { require Digest::SHA1 };
     my $sha_loaded  = eval { require Digest::SHA };
     unless ($sha1_loaded || $sha_loaded) {
         fatal("%s", <<"EOM");
@@ -2476,9 +2486,10 @@ On Debian, the package libdigest-sha1-perl or libdigest-sha-perl must be install
 EOM
     }
     if ($sha1_loaded) {
-        import Digest::SHA1 (qw/sha1_hex/);
+        # Um I honestly don't know if this will work since SHA1 isn't even listed as a standard module for perl...please help
+        import Digest::SHA1 (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
     } elsif ($sha_loaded) {
-        import Digest::SHA (qw/sha1_hex/);
+        import Digest::SHA (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
     }
 }
 ######################################################################
@@ -7935,6 +7946,455 @@ sub nic_infomaniak_update {
             $config{$h}{"status-ipv$v"} = 'failed';
             failed("updating %s: could not update IP on Infomaniak", $h);
         }
+    }
+}
+
+######################################################################
+## nic_infomaniak_examples
+######################################################################
+sub nic_route53_examples {
+    return <<"EoEXAMPLE";
+
+o 'AWS Route53'
+
+The 'AWS Route53' protocol is used by Route53 service that AWS offers.
+
+The required variables AWS Credentials:
+    - AWS_SECRET_ACCESS_KEY
+    - AWS_ACCESS_KEY_ID
+These will default to your environment variables but can be passed as 
+variables as well.
+
+Configuration variables applicable to the 'infomaniak' protocol are:
+  protocol=route53
+  hosted_zone_id=hosted_zone_id ## The id of the Hosted Zone
+  ttl=[number]                  ## TTL for record (Defaults to 300)
+  region=[aws region]           ## AWS Region (Defaults to us-east-1)
+  example.com                   ## domain name to update
+
+Example ${program}.conf file entries:
+  protocol=route53,       \\
+  hosted_zone_id=ZXXXXXXXXXXX
+  my.address.com
+
+For more information about how to create a dynamic DNS, see https://faq.infomaniak.com/2357.
+
+EoEXAMPLE
+}
+
+sub append_zero {
+    my (
+        $input,
+        $limit
+    ) = @_;
+
+    my $limitValue = $limit // 10;
+    return $input < $limitValue ? '0'.$input : $input;
+}
+
+# Not create a whole package so discount version of a class I guess
+# Start Date object
+sub create_date {
+    my $gm = gmtime();
+
+    my %date = (
+        gm => $gm,
+        year => $gm->year() + 1900,
+        month => append_zero($gm->mon() + 1),
+        day => append_zero($gm->mday()),
+        hour => append_zero($gm->hour()),
+        min => append_zero($gm->min()),
+        sec => append_zero($gm->sec())
+    );
+
+    return \%date;
+}
+
+sub to_iso_string {
+    my ($date) = @_;
+    return %$date{'year'}.%$date{'month'}.%$date{'day'}."T".%$date{'hour'}.%$date{'min'}.%$date{'sec'}."Z";
+}
+
+sub to_short_date {
+    my ($date) = @_;
+    return %$date{'year'}.%$date{'month'}.%$date{'day'};
+}
+
+# End date object
+
+# Start URL object
+sub parse_url {
+    my ($url) = @_;
+    my $originalURL = $url;
+    my (
+        $protocol_cp,
+        $host_cp,
+        $port_cp,
+        $path_cp,
+        $query_string_cp
+    ) = $url =~ /([a-z]+):\/\/([\w\.\-]+)\:?(\d+)?([^?]+)(?:\?(.+))?/;
+
+    my $parsed_query_string = $query_string_cp // "";
+    my @seperated_query_params = split(/\&/,$parsed_query_string);
+    my %query_parameters = ();
+    foreach my $query_param (@seperated_query_params) {
+        my ($key, $value) = split("=", $query_param);
+        $key =~ s/([^A-Za-z0-9\-])/sprintf("%%%02X", ord($1))/seg;
+        $key =~ s/%2D/\-/g; # Correct unexpected encoding
+        if (defined $value) {
+            $value =~ s/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg;
+            $query_parameters{$key} = $value;
+        } else {
+            $query_parameters{$key} = sprintf("%%%02X", "");
+        }
+    }
+
+    my $protocol = $protocol_cp // "";
+    my $host = $host_cp // "";
+    my $port = $port_cp // "";
+    my $path = $path_cp // "";
+    my $query_string = $query_string_cp // "";
+
+    print("\n".$protocol."|".$host."|".$port."|".$path."|".$query_string."\n");
+    print("\nOriginal: ".$originalURL."\nHost: ".$host."\n");
+
+    my %completeUrl = (
+        url => $originalURL,
+        protocol => $protocol,
+        host => $host,
+        port => $port,
+        path => $path,
+        query_string => $query_string,
+        query_string_map => \%query_parameters
+    );
+
+    return \%completeUrl;
+}
+
+sub get_encoded_query_string {
+    my ($url_obj) = @_;
+
+    my @sorted_query_string_keys = sort(keys(%{%$url_obj{"query_string_map"}}));
+    my $encoded_query_string = "";
+    foreach my $key (@sorted_query_string_keys) {
+        $encoded_query_string = $encoded_query_string.$key."=".%{%$url_obj{"query_string_map"}}{$key};
+        if ($key ne $sorted_query_string_keys[$#sorted_query_string_keys]) {
+            $encoded_query_string = $encoded_query_string."&";
+        }
+    }
+
+    return $encoded_query_string;
+}
+
+sub get_encoded_url {
+    my ($url_obj) = @_;
+
+    my $query_string = %$url_obj{'protocol'}."://".%$url_obj{'host'}.%$url_obj{'path'}.get_encoded_query_string($url_obj);
+
+    return $query_string;
+}
+
+# End URL object
+
+sub create_canonical_request_hash {
+    my (
+        $method,
+        $url,
+        $sent_payload,
+        $incoming_headers,
+        $date
+    ) = @_;
+
+    my $http_method = $method // "GET";
+    my $payload_to_hash = $sent_payload // "";
+    my $payload = lc sha256_hex($payload_to_hash);
+
+    my $parsed_host = %$url{"host"};
+    my %generated_headers = (
+        host => $parsed_host,
+        'x-amz-content-sha256' => $payload,
+        'x-amz-date' => to_iso_string($date)
+    );
+
+    my %finalized_headers = (%{$incoming_headers}, %generated_headers);
+
+    my $header_string = "";
+    my $signed_headers = "";
+    my @finalized_header_keys = sort keys %finalized_headers;
+    my %formatted_finalized_headers = ();
+    print("\n");
+    for my $header_key (@finalized_header_keys) {
+        my $value = $finalized_headers{$header_key};
+        $value =~ s/^\s+|\s+$//g;
+        print("Key: ".$header_key." | Value: ".$value."\n");
+        $header_string = $header_string.(lc $header_key).':'.($value)."\n";
+        $signed_headers = $signed_headers.(lc $header_key);
+
+        if ($header_key ne $finalized_header_keys[$#finalized_header_keys]) {
+            $signed_headers = $signed_headers.';';
+        }
+
+        $formatted_finalized_headers{lc $header_key} = $value;        
+    }
+    print("\n");
+
+    my $canonical_uri = %$url{"path"};
+    my $canonical_query_string = get_encoded_query_string($url);
+    print("\nPayload: ".$payload_to_hash."\n");
+    my $canonical_request = "$method\n$canonical_uri\n$canonical_query_string\n$header_string\n$signed_headers\n$payload";
+
+    print("Canonical Request\n-------------\n$canonical_request\n-------------\n\n");
+
+    my %result = (
+        hash => lc sha256_hex($canonical_request),
+        signed_headers => $signed_headers,
+        finalized_headers => \%formatted_finalized_headers
+    );
+
+    return \%result;
+}
+
+$ALGORITHM = "AWS4-HMAC-SHA256";
+
+sub create_string_to_sign {
+    my (
+        $hash,
+        $service,
+        $region,
+        $date
+    ) = @_;
+
+    my $regionToUse = $region // $ENV{"AWS_REGION"} // "us-east-1";
+    
+    my $scope = to_short_date($date)."/$regionToUse/$service/aws4_request";
+    my %result = (
+        string => $ALGORITHM."\n".(to_iso_string($date))."\n$scope\n$hash",
+        scope => $scope
+    );
+
+    print("String To Sign\n-------------\n".$result{"string"}."\n-------------\n");
+
+    return \%result;
+}
+    
+sub create_signature {
+    my (
+        $string_to_sign,
+        $secret_access_key,
+        $region,
+        $service,
+        $date
+    ) = @_;
+    print("\n\nSecret: "."AWS4".$secret_access_key." | Short-Date: ".to_short_date($date)."\n\n");
+    print("Region: ".$region." | Service: ".$service."\n\n");
+    my $k_date = hmac_sha256(to_short_date($date), "AWS4".$secret_access_key);
+    my $k_region = hmac_sha256($region, $k_date,);
+    my $k_service = hmac_sha256($service, $k_region);
+    my $k_signing = hmac_sha256("aws4_request", $k_service);
+    return lc hmac_sha256_hex($string_to_sign, $k_signing);
+}
+
+sub create_signed_request {
+    my %params = @_;
+    my $service = $params{"service"}; # In the future will likely parse this from the url
+    my $region = $params{'region'} // $ENV{"AWS_REGION"} // "us-east-1";
+    my $aws_secret_access_key = $params{'aws_secret_access_key'} // $ENV{"AWS_SECRET_ACCESS_KEY"};
+    my $aws_access_key_id = $params{'aws_access_key_id'} // $ENV{"AWS_ACCESS_KEY_ID"};
+    my $request_url = $params{'request_url'};
+    my $request_method = $params{'request_method'} // "GET";
+    my $request_payload = $params{'request_payload'} // "";
+    my $request_headers = $params{'request_headers'} // {};
+
+    my $url = parse_url($request_url);
+    my $date = create_date();
+
+    my $canonical_request = create_canonical_request_hash(
+        $request_method,
+        $url,
+        $request_payload,
+        $request_headers,
+        $date
+    );
+
+    # Interesting so when pulling out by key if not within another variable the keys is pulled too....
+    my $canonical_request_hash = %$canonical_request{hash};
+    my $string_to_sign = create_string_to_sign($canonical_request_hash, $service, $region, $date);
+
+    my $result_string = %$string_to_sign{string};
+    my $signature = create_signature($result_string, $aws_secret_access_key, $region, $service, $date);
+
+    # curl subroutine above is expected headers to be a string
+    my $aws_authorization = $ALGORITHM." Credential=".$aws_access_key_id."/".%$string_to_sign{"scope"}.",SignedHeaders=".%$canonical_request{"signed_headers"}.",Signature=".$signature;
+
+    print("\nAuthorization:".$aws_authorization."\n\n");
+    my $request_header_string = "";
+    my %compiled_headers = (%{%$canonical_request{"finalized_headers"}}, ( Authorization => $aws_authorization));
+    my @compiled_headers_key = sort keys %compiled_headers;
+    for my $header_key (@compiled_headers_key) {
+        $request_header_string = $request_header_string.(lc $header_key).":".($compiled_headers{$header_key});
+
+        if ($header_key ne $compiled_headers_key[$#compiled_headers_key]) {
+            $request_header_string = $request_header_string."\n";
+        }
+    }
+
+    my %curl_opts = (
+        url => get_encoded_url($url),
+        method => $request_method,
+        headers => $request_header_string
+    );
+
+    if ($request_method =~ "PUT|POST|PATCH") {
+        $curl_opts{data} = $request_payload;
+    }
+
+    return geturl(%curl_opts);
+}
+$AWS_ROUTE53_BASE = "https://route53.amazonaws.com/2013-04-01/";
+sub get_route53_api_url {
+    my (
+        $resource,
+        $query_parameters
+    ) = @_;
+
+    my $api_request_url = $AWS_ROUTE53_BASE.$resource;
+
+    if (defined($query_parameters)) {
+        $api_request_url .= "?".$query_parameters
+    }
+
+    return $api_request_url;
+}
+
+sub get_current_hosted_zone {
+    my (
+        $resource_set_name,
+        $aws_access_key_id,
+        $aws_secret_access_key,
+        $aws_region
+    ) = @_;
+
+    my $reply = create_signed_request((
+        service => "route53",
+        region => $aws_region // $ENV{"AWS_REGION"} // "us-east-1",
+        request_url => get_route53_api_url("hostedzone"),
+        request_method => "GET",
+        aws_secret_access_key => $aws_secret_access_key,
+        aws_access_key_id => $aws_access_key_id
+    ));
+
+        # No response, declare as failed
+    if (!defined($reply) || !$reply) {
+        failed("KEYSYSTEMS updating %s: Could not connect to %s.", $h, $config{$h}{'server'});
+        return;
+    }
+
+    last if !header_ok($h, $reply);
+
+    if ($reply =~ /code = 200/) {
+       
+    } else {
+        $config{$h}{'status'} = 'failed';
+        failed("Getting current hostedzones %s: Server said: '$reply'", $h);
+    }
+}
+
+sub update_route53_one {
+    my (
+        $hosted_zone_id,
+        $resource_set_name,
+        $resource_set_type,
+        $ip,
+        $ttl,
+        $aws_access_key_id,
+        $aws_secret_access_key,
+        $aws_region
+    ) = @_;
+
+    my $resource_type = $resource_set_type // ($ip =~ /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/ ? "A" : "AAAA");
+    my $ttl_to_use = $ttl // 300;
+
+    my $request_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<ChangeResourceRecordSetsRequest xmlns=\"$AWS_ROUTE53_BASE\">
+    <ChangeBatch>
+        <Changes>
+            <Change>
+                <Action>UPSERT</Action>
+                <ResourceRecordSet>
+                    <Name>$resource_set_name</Name>
+                    <Type>$resource_set_type</Type>
+                    <TTL>$ttl_to_use</TTL>
+                    <ResourceRecords>
+                        <ResourceRecord>
+                            <Value>$ip</Value>
+                        </ResourceRecord>
+                    </ResourceRecords>
+                </ResourceRecordSet>
+            </Change>
+        </Changes>
+    </ChangeBatch>
+</ChangeResourceRecordSetsRequest>";
+
+    my $reply = create_signed_request((
+        service => "route53",
+        region => $aws_region // $ENV{"AWS_REGION"} // "us-east-1",
+        request_url => get_route53_api_url($hosted_zone_id."/rrset")
+        request_method => "POST",
+        request_headers => {
+            "content-type" => "text/xml",
+        },
+        request_payload => $request_xml,
+        aws_secret_access_key => $aws_secret_access_key,
+        aws_access_key_id => $aws_access_key_id
+    ));
+
+        # No response, declare as failed
+    if (!defined($reply) || !$reply) {
+        failed("KEYSYSTEMS updating %s: Could not connect to %s.", $h, $config{$h}{'server'});
+        return;
+    }
+
+    last if !header_ok($h, $reply);
+
+    if ($reply =~ /code = 200/) {
+        $config{$h}{'ip'}   = $ip;
+        $config{$h}{'mtime'} = $now;
+        $config{$h}{'status'} = 'good';
+        success("updating %s: good: IP address set to %s", $h, $ip);
+    } else {
+        $config{$h}{'status'} = 'failed';
+        failed("updating %s: Server said: '$reply'", $h);
+    }
+}
+
+######################################################################
+## nic_route53_update
+##
+## written by Chanceler Shaffer
+##
+## based on {{ idek yet }}
+##
+## needs one of the following urls to update: {{ will add }}
+######################################################################
+sub nic_route53_update {
+    debug("\nnic_route53_update---------------------");
+    
+    foreach my $h (@_) {
+        my $ipv4  = $config{$h}{'wantipv4'};
+        info("setting IP address to %s for %s", $ip, $h);
+        verbose("UPDATE:", "updating %s", $h);
+
+        # Only works for IPV4 at the moment
+        update_route53_one(
+            $config{$h}{'hosted_zone_id'},
+            $h,
+            "A",
+            $ipv4,
+            300,
+            $config{$h}['aws-access-key-id'],   
+            $config{$h}{'aws-secret-access-key'},
+            $config{$h}{'aws-region'}
+        )
     }
 }
 
