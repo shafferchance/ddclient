@@ -197,10 +197,10 @@ ssl=yes					# use ssl-support.  Works with
 ## Gandi (gandi.net)
 ##
 ## Single host update
-# protocol=gandi,                      \
-# zone=example.com,                    \
-# password=my-gandi-api-key,           \
-# ttl=3h                               \
+# protocol=gandi
+# zone=example.com
+# password=my-gandi-api-key
+# ttl=10800 # optional
 # myhost.example.com
 
 ##
@@ -369,4 +369,13 @@ ssl=yes					# use ssl-support.  Works with
 # protocol=infomaniak,
 # login=ddns_username,
 # password=ddns_password
+# example.com
+#
+# N.B. the infomaniak protocol is obsolete. Please use dyndns2 instead:
+#
+# protocol=dyndns2,
+# use=web, web=infomaniak.com/ip.php/
+# login=ddns_username,
+# password=ddns_password
+# redirect=2
 # example.com
