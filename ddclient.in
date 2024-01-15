@@ -1872,7 +1872,7 @@ sub init_config {
         $proto = $config{$h}{'protocol'};
         $proto = opt('protocol') if !defined($proto);
 
-        load_sha1_support($proto) if (grep (/^$proto$/, ("freedns", "nfsn")));
+        load_sha1_support($proto) if (grep (/^$proto$/, ("freedns", "nfsn","route53")));
         load_json_support($proto) if (grep (/^$proto$/, ("1984", "cloudflare", "digitalocean", "gandi", "godaddy", "hetzner", "yandex", "nfsn", "njalla", "porkbun", "dnsexit2")));
 
         if (!exists($services{$proto})) {
@@ -2494,20 +2494,18 @@ sub encode_base64 ($;$) {
 ######################################################################
 sub load_sha1_support {
     my $why         = shift;
-    # my $sha1_loaded = eval { require Digest::SHA1 };
+    my $sha1_loaded = eval { require Digest::SHA1 };
     my $sha_loaded  = eval { require Digest::SHA };
-    unless ($sha_loaded) {
+    unless ($sha_loaded || $sha1_loaded) {
         fatal("%s", <<"EOM");
 Error loading the Perl module Digest::SHA1 or Digest::SHA needed for $why update.
 On Debian, the package libdigest-sha1-perl or libdigest-sha-perl must be installed.
 EOM
     }
-    # if ($sha1_loaded) {
-    #     # Um I honestly don't know if this will work since SHA1 isn't even listed as a standard module for perl...please help
-    #     use Digest::SHA1 (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
-    # } els
-    if ($sha_loaded) {
-        use Digest::SHA (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
+    if ($sha1_loaded) {
+        import Digest::SHA1 (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
+    } elsif ($sha_loaded) {
+        import Digest::SHA (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
     }
 
 
@@ -7977,17 +7975,17 @@ variables as well.
 
 Configuration variables applicable to the 'infomaniak' protocol are:
   protocol=route53
-  hosted_zone_id=hosted_zone_id ## The id of the Hosted Zone
-  ttl=[number]                  ## TTL for record (Defaults to 300)
-  region=[aws region]           ## AWS Region (Defaults to us-east-1)
-  example.com                   ## domain name to update
+  hosted_zone_id=hosted_zone_id                 ## The id of the Hosted Zone
+  ttl=[number]                                  ## TTL for record (Defaults to 300)
+  region=[aws region]                           ## AWS Region (Defaults to us-east-1)
+  aws-secret-access-key=[AWS_SECRET_ACCESS_KEY] ## Defaults to environment var AWS_SECRET_ACCESS_KEY
+  aws-access-key-id=[AWS_ACCESS_KEY_ID]         ## Defaults to environment var AWS_ACCESS_KEY_ID
+  example.com                                   ## Domain name to update
 
 Example ${program}.conf file entries:
   protocol=route53,       \\
   hosted_zone_id=ZXXXXXXXXXXX
   my.address.com
-
-For more information about how to create a dynamic DNS, see https://faq.infomaniak.com/2357.
 
 EoEXAMPLE
 }
