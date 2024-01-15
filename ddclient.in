@@ -988,7 +988,12 @@ my %services = (
         'update'     => \&nic_route53_update,
         'examples'   => \&nic_route53_examples,
         'variables'  => {
-            %{$variables{'service-common-defaults'}},
+            'login' => setv(T_STRING, 0, 0, 'unused', undef),
+            'password' => setv(T_STRING, 0, 0, 'unused', undef),
+            'use' => setv(T_USE, 0, 0, 'web', undef),
+            'usev4' => setv(T_USEV4, 0, 0, 'web', undef),
+            'usev6' => setv(T_USEV6, 0, 0, 'disabled', undef),
+            'hosted-zone-id' => setv(T_STRING, 1, 0, undef, undef),
             'aws-secret-access-key' => setv(T_STRING, 0, 0, $ENV{'AWS_SECRET_ACCESS_KEY'}, undef),
             'aws-access-key-id' => setv(T_STRING, 0, 0, $ENV{'AWS_ACCESS_KEY_ID'}, undef),
             'aws-region' => setv(T_STRING, 0, 0, 'us-east-1', undef)
@@ -1182,7 +1187,6 @@ sub main {
         }
 
         $daemon = opt('daemon');
-
         update_nics();
 
         if ($daemon) {
@@ -2490,19 +2494,23 @@ sub encode_base64 ($;$) {
 ######################################################################
 sub load_sha1_support {
     my $why         = shift;
+    # my $sha1_loaded = eval { require Digest::SHA1 };
     my $sha_loaded  = eval { require Digest::SHA };
-    unless ($sha1_loaded || $sha_loaded) {
+    unless ($sha_loaded) {
         fatal("%s", <<"EOM");
 Error loading the Perl module Digest::SHA1 or Digest::SHA needed for $why update.
 On Debian, the package libdigest-sha1-perl or libdigest-sha-perl must be installed.
 EOM
     }
-    if ($sha1_loaded) {
-        # Um I honestly don't know if this will work since SHA1 isn't even listed as a standard module for perl...please help
-        import Digest::SHA1 (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
-    } elsif ($sha_loaded) {
-        import Digest::SHA (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
+    # if ($sha1_loaded) {
+    #     # Um I honestly don't know if this will work since SHA1 isn't even listed as a standard module for perl...please help
+    #     use Digest::SHA1 (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
+    # } els
+    if ($sha_loaded) {
+        use Digest::SHA (qw/sha1_hex sha256_hex hmac_sha256_hex hmac_sha256/);
     }
+
+
 }
 ######################################################################
 ## load_json_support
@@ -7997,16 +8005,15 @@ sub append_zero {
 # Not create a whole package so discount version of a class I guess
 # Start Date object
 sub create_date {
-    my $gm = gmtime();
+    my ($sec,$min,$hour,$mday,$mon,$year) = gmtime(time);
 
     my %date = (
-        gm => $gm,
-        year => $gm->year() + 1900,
-        month => append_zero($gm->mon() + 1),
-        day => append_zero($gm->mday()),
-        hour => append_zero($gm->hour()),
-        min => append_zero($gm->min()),
-        sec => append_zero($gm->sec())
+        year => $year + 1900,
+        month => append_zero($mon + 1),
+        day => append_zero($mday),
+        hour => append_zero($hour),
+        min => append_zero($min),
+        sec => append_zero($sec)
     );
 
     return \%date;
@@ -8014,12 +8021,12 @@ sub create_date {
 
 sub to_iso_string {
     my ($date) = @_;
-    return %$date{'year'}.%$date{'month'}.%$date{'day'}."T".%$date{'hour'}.%$date{'min'}.%$date{'sec'}."Z";
+    return $date->{'year'}.$date->{'month'}.$date->{'day'}."T".$date->{'hour'}.$date->{'min'}.$date->{'sec'}."Z";
 }
 
 sub to_short_date {
     my ($date) = @_;
-    return %$date{'year'}.%$date{'month'}.%$date{'day'};
+    return $date->{'year'}.$date->{'month'}.$date->{'day'};
 }
 
 # End date object
@@ -8057,8 +8064,8 @@ sub parse_url {
     my $path = $path_cp // "";
     my $query_string = $query_string_cp // "";
 
-    print("\n".$protocol."|".$host."|".$port."|".$path."|".$query_string."\n");
-    print("\nOriginal: ".$originalURL."\nHost: ".$host."\n");
+    debug("\n".$protocol."|".$host."|".$port."|".$path."|".$query_string."\n");
+    debug("\nOriginal: ".$originalURL."\nHost: ".$host."\n");
 
     my %completeUrl = (
         url => $originalURL,
@@ -8124,11 +8131,11 @@ sub create_canonical_request_hash {
     my $signed_headers = "";
     my @finalized_header_keys = sort keys %finalized_headers;
     my %formatted_finalized_headers = ();
-    print("\n");
+    debug("\n");
     for my $header_key (@finalized_header_keys) {
         my $value = $finalized_headers{$header_key};
         $value =~ s/^\s+|\s+$//g;
-        print("Key: ".$header_key." | Value: ".$value."\n");
+        debug("Key: ".$header_key." | Value: ".$value."\n");
         $header_string = $header_string.(lc $header_key).':'.($value)."\n";
         $signed_headers = $signed_headers.(lc $header_key);
 
@@ -8138,14 +8145,14 @@ sub create_canonical_request_hash {
 
         $formatted_finalized_headers{lc $header_key} = $value;        
     }
-    print("\n");
+    debug("\n");
 
     my $canonical_uri = %$url{"path"};
     my $canonical_query_string = get_encoded_query_string($url);
-    print("\nPayload: ".$payload_to_hash."\n");
+    debug("\nPayload: ".$payload_to_hash."\n");
     my $canonical_request = "$method\n$canonical_uri\n$canonical_query_string\n$header_string\n$signed_headers\n$payload";
 
-    print("Canonical Request\n-------------\n$canonical_request\n-------------\n\n");
+    debug("Canonical Request\n-------------\n$canonical_request\n-------------\n\n");
 
     my %result = (
         hash => lc sha256_hex($canonical_request),
@@ -8156,7 +8163,7 @@ sub create_canonical_request_hash {
     return \%result;
 }
 
-$ALGORITHM = "AWS4-HMAC-SHA256";
+my $ALGORITHM = "AWS4-HMAC-SHA256";
 
 sub create_string_to_sign {
     my (
@@ -8174,7 +8181,7 @@ sub create_string_to_sign {
         scope => $scope
     );
 
-    print("String To Sign\n-------------\n".$result{"string"}."\n-------------\n");
+    debug("String To Sign\n-------------\n".$result{"string"}."\n-------------\n");
 
     return \%result;
 }
@@ -8187,8 +8194,8 @@ sub create_signature {
         $service,
         $date
     ) = @_;
-    print("\n\nSecret: "."AWS4".$secret_access_key." | Short-Date: ".to_short_date($date)."\n\n");
-    print("Region: ".$region." | Service: ".$service."\n\n");
+    debug("\n\nSecret: "."AWS4".$secret_access_key." | Short-Date: ".to_short_date($date)."\n\n");
+    debug("Region: ".$region." | Service: ".$service."\n\n");
     my $k_date = hmac_sha256(to_short_date($date), "AWS4".$secret_access_key);
     my $k_region = hmac_sha256($region, $k_date,);
     my $k_service = hmac_sha256($service, $k_region);
@@ -8228,7 +8235,7 @@ sub create_signed_request {
     # curl subroutine above is expected headers to be a string
     my $aws_authorization = $ALGORITHM." Credential=".$aws_access_key_id."/".%$string_to_sign{"scope"}.",SignedHeaders=".%$canonical_request{"signed_headers"}.",Signature=".$signature;
 
-    print("\nAuthorization:".$aws_authorization."\n\n");
+    debug("\nAuthorization:".$aws_authorization."\n\n");
     my $request_header_string = "";
     my %compiled_headers = (%{%$canonical_request{"finalized_headers"}}, ( Authorization => $aws_authorization));
     my @compiled_headers_key = sort keys %compiled_headers;
@@ -8247,12 +8254,14 @@ sub create_signed_request {
     );
 
     if ($request_method =~ "PUT|POST|PATCH") {
+        debug("Body: ".$request_payload."\n");
         $curl_opts{data} = $request_payload;
     }
 
     return geturl(%curl_opts);
 }
-$AWS_ROUTE53_BASE = "https://route53.amazonaws.com/2013-04-01/";
+
+my $AWS_ROUTE53_BASE = "https://route53.amazonaws.com/2013-04-01/";
 sub get_route53_api_url {
     my (
         $resource,
@@ -8268,43 +8277,10 @@ sub get_route53_api_url {
     return $api_request_url;
 }
 
-sub get_current_hosted_zone {
-    my (
-        $resource_set_name,
-        $aws_access_key_id,
-        $aws_secret_access_key,
-        $aws_region
-    ) = @_;
-
-    my $reply = create_signed_request((
-        service => "route53",
-        region => $aws_region // $ENV{"AWS_REGION"} // "us-east-1",
-        request_url => get_route53_api_url("hostedzone"),
-        request_method => "GET",
-        aws_secret_access_key => $aws_secret_access_key,
-        aws_access_key_id => $aws_access_key_id
-    ));
-
-        # No response, declare as failed
-    if (!defined($reply) || !$reply) {
-        failed("KEYSYSTEMS updating %s: Could not connect to %s.", $h, $config{$h}{'server'});
-        return;
-    }
-
-    last if !header_ok($h, $reply);
-
-    if ($reply =~ /code = 200/) {
-       
-    } else {
-        $config{$h}{'status'} = 'failed';
-        failed("Getting current hostedzones %s: Server said: '$reply'", $h);
-    }
-}
-
 sub update_route53_one {
     my (
         $hosted_zone_id,
-        $resource_set_name,
+        $h,
         $resource_set_type,
         $ip,
         $ttl,
@@ -8316,41 +8292,44 @@ sub update_route53_one {
     my $resource_type = $resource_set_type // ($ip =~ /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/ ? "A" : "AAAA");
     my $ttl_to_use = $ttl // 300;
 
-    my $request_xml = "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
-<ChangeResourceRecordSetsRequest xmlns=\"$AWS_ROUTE53_BASE\">
-    <ChangeBatch>
-        <Changes>
-            <Change>
-                <Action>UPSERT</Action>
-                <ResourceRecordSet>
-                    <Name>$resource_set_name</Name>
-                    <Type>$resource_set_type</Type>
-                    <TTL>$ttl_to_use</TTL>
-                    <ResourceRecords>
-                        <ResourceRecord>
-                            <Value>$ip</Value>
-                        </ResourceRecord>
-                    </ResourceRecords>
-                </ResourceRecordSet>
-            </Change>
-        </Changes>
-    </ChangeBatch>
-</ChangeResourceRecordSetsRequest>";
+    my $ROUTE53_NS = "https://route53.amazonaws.com/doc/2013-04-01/";
+    my $request_xml =
+    "<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+    <ChangeResourceRecordSetsRequest xmlns=\"$ROUTE53_NS\">
+        <ChangeBatch>
+            <Changes>
+                <Change>
+                    <Action>UPSERT</Action>
+                    <ResourceRecordSet>
+                        <Name>$h</Name>
+                        <Type>$resource_set_type</Type>
+                        <TTL>$ttl_to_use</TTL>
+                        <ResourceRecords>
+                            <ResourceRecord>
+                                <Value>$ip</Value>
+                            </ResourceRecord>
+                        </ResourceRecords>
+                    </ResourceRecordSet>
+                </Change>
+            </Changes>
+        </ChangeBatch>
+    </ChangeResourceRecordSetsRequest>";
 
+    my $region = $aws_region // $ENV{"AWS_REGION"} // "us-east-1";
     my $reply = create_signed_request((
         service => "route53",
-        region => $aws_region // $ENV{"AWS_REGION"} // "us-east-1",
-        request_url => get_route53_api_url($hosted_zone_id."/rrset")
+        region => $region,
+        request_url => get_route53_api_url("hostedzone/".$hosted_zone_id."/rrset/"),
         request_method => "POST",
         request_headers => {
-            "content-type" => "text/xml",
+            "content-type" => "application/xml",
         },
         request_payload => $request_xml,
         aws_secret_access_key => $aws_secret_access_key,
         aws_access_key_id => $aws_access_key_id
     ));
 
-        # No response, declare as failed
+    # No response, declare as failed
     if (!defined($reply) || !$reply) {
         failed("KEYSYSTEMS updating %s: Could not connect to %s.", $h, $config{$h}{'server'});
         return;
@@ -8358,7 +8337,9 @@ sub update_route53_one {
 
     last if !header_ok($h, $reply);
 
-    if ($reply =~ /code = 200/) {
+    my ($top) = split(/\s/, $reply, 1);
+    my ($protocol,$status) = split(/\s/, $top);
+    if ($status == '200') {
         $config{$h}{'ip'}   = $ip;
         $config{$h}{'mtime'} = $now;
         $config{$h}{'status'} = 'good';
@@ -8380,23 +8361,42 @@ sub update_route53_one {
 ######################################################################
 sub nic_route53_update {
     debug("\nnic_route53_update---------------------");
-    
+
     foreach my $h (@_) {
-        my $ipv4  = $config{$h}{'wantipv4'};
-        info("setting IP address to %s for %s", $ip, $h);
+        my $ipv4 = delete $config{$h}{'wantipv4'};
+        my $ipv6 = delete $config{$h}{'wantipv6'};
         verbose("UPDATE:", "updating %s", $h);
 
-        # Only works for IPV4 at the moment
-        update_route53_one(
-            $config{$h}{'hosted_zone_id'},
-            $h,
-            "A",
-            $ipv4,
-            300,
-            $config{$h}['aws-access-key-id'],   
-            $config{$h}{'aws-secret-access-key'},
-            $config{$h}{'aws-region'}
-        )
+        if ($ipv4) {
+            info("setting IP address to %s for %s", $ipv4, $h);
+
+            # Only works for IPV4 at the moment
+            update_route53_one(
+                $config{$h}{'hosted-zone-id'},
+                $h,
+                "A",
+                $ipv4,
+                300,
+                $config{$h}{'aws-access-key-id'},   
+                $config{$h}{'aws-secret-access-key'},
+                $config{$h}{'aws-region'}
+            )
+        }
+
+        if ($ipv6) {
+            info("setting IP address to %s for %s", $ipv6, $h);
+
+            update_route53_one(
+                $config{$h}{'hosted-zone-id'},
+                $h,
+                "AAAA",
+                $ipv6,
+                300,
+                $config{$h}{'aws-access-key-id'},   
+                $config{$h}{'aws-secret-access-key'},
+                $config{$h}{'aws-region'}
+            )
+        }
     }
 }
 
