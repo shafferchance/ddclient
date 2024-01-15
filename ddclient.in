@@ -7971,7 +7971,7 @@ sub nic_infomaniak_update {
 }
 
 ######################################################################
-## nic_infomaniak_examples
+## nic_route53_examples
 ######################################################################
 sub nic_route53_examples {
     return <<"EoEXAMPLE";
@@ -8384,9 +8384,13 @@ sub update_route53_one {
 ##
 ## written by Chanceler Shaffer
 ##
-## based on {{ idek yet }}
+## based on:
+##  - https://docs.aws.amazon.com/Route53/latest/APIReference/API_ChangeResourceRecordSets.html
+##  - https://docs.aws.amazon.com/AmazonS3/latest/API/sig-v4-header-based-auth.html
 ##
-## needs one of the following urls to update: {{ will add }}
+## needs the following to update:
+##  - AWS_SECRET_ACCESS_KEY
+##  - AWS_ACCESS_KEY_ID
 ######################################################################
 sub nic_route53_update {
     debug("\nnic_route53_update---------------------");
