@@ -8052,24 +8052,24 @@ sub parse_url {
         $port_cp,
         $path_cp,
         $query_string_cp
-    ) = $url =~ /([a-z]+):\/\/([\w\.\-]+)\:?(\d+)?([^?]+)(?:\?(.+))?/;
+    ) = $url =~ /([a-z]+):\/\/([\w\.\-]+)\:?(\d+)?([^?]+)?(?:\?(.+))?/;
+    # For RegExp explaination please see: https://regexr.com/7qeg6 
 
     my $parsed_query_string = $query_string_cp // "";
     my @seperated_query_params = split(/\&/,$parsed_query_string);
     my %query_parameters = ();
     foreach my $query_param (@seperated_query_params) {
         my ($key, $value) = split("=", $query_param);
-        $key =~ s/([^A-Za-z0-9\-])/sprintf("%%%02X", ord($1))/seg;
-        $key =~ s/%2D/\-/g; # Correct unexpected encoding
-        if (defined $value) {
-            $value =~ s/([^A-Za-z0-9])/sprintf("%%%02X", ord($1))/seg;
+        $key = uri_escape($key);
+        if (defined($value)) {
+            $value = uri_escape($value);
             $query_parameters{$key} = $value;
         } else {
-            $query_parameters{$key} = sprintf("%%%02X", "");
+            $query_parameters{$key} = uri_escape("");
         }
     }
 
-    if (!(defined $protocol_cp) && !(defined $host_cp)) {
+    if (!(defined($protocol_cp)) && !(defined($host_cp))) {
         die "Invalid URL: Missing both protocol and host";
     }
 
@@ -8095,6 +8095,17 @@ sub parse_url {
     return \%completeUrl;
 }
 
+sub load_uri_escape {
+    my $uri_escape_loaded = eval { require URI::Escape };
+    unless ($uri_escape_loaded) {
+        fatal("%s", <<"EOM");
+Error loading URI::Escape. Please ensure the package liburi-perl is installed.
+EOM
+    }
+
+    import URI::Escape;
+}
+
 sub get_encoded_query_string {
     my ($url_obj) = @_;
 
@@ -8110,12 +8121,47 @@ sub get_encoded_query_string {
     return $encoded_query_string;
 }
 
-sub get_encoded_url {
+sub encode_url_path {
+    my ($url_path) = @_;
+
+    my @path_array = split(/\//, $url_path);
+    my $encoded_path = "/";
+
+    if (scalar(@path_array) > 1) {
+        foreach my $entry (@path_array[1..$#path_array]) {
+            my $escaped = uri_escape($entry);
+            # The hexdemicals codes need to be uppercase
+            $escaped =~ s/%([0-9a-fA-F]{2})/uc("%$1")/ge;
+
+            $encoded_path = $encoded_path.$escaped;
+            if ($entry ne $path_array[$#path_array]) {
+                $encoded_path = $encoded_path."/";
+            }
+        }
+    }
+
+    return $encoded_path;
+}
+
+sub get_full_url {
     my ($url_obj) = @_;
 
-    my $query_string = %$url_obj{'protocol'}."://".%$url_obj{'host'}.%$url_obj{'path'}.get_encoded_query_string($url_obj);
+    my %test_ref = %$url_obj;
+    my $url = $test_ref{protocol}.'://'.$test_ref{host};
+    if ($test_ref{port} ne '') {
+        $url = $url.':'.$test_ref{port};
+    }
 
-    return $query_string;
+    printf("Path: %s\n", $test_ref{'path'});
+    my $encoded_path = encode_url_path($test_ref{path});
+    printf("Result: %s", $encoded_path);
+    $url = $url.$encoded_path;
+    my $query_parameters_length = scalar(keys(%{$test_ref{query_string_map}}));
+    if ($query_parameters_length > 0) {
+        $url = $url.'?'.get_encoded_query_string(\%test_ref);
+    }
+    
+    return $url;
 }
 
 # End URL object
@@ -8131,7 +8177,7 @@ sub create_canonical_request_hash {
 
     my $http_method = $method // "GET";
     my $payload_to_hash = $sent_payload // "";
-    my $payload = lc sha256_hex($payload_to_hash);
+    my $payload = lc(sha256_hex($payload_to_hash));
 
     my $parsed_host = %$url{"host"};
     my %generated_headers = (
@@ -8144,7 +8190,7 @@ sub create_canonical_request_hash {
 
     my $header_string = "";
     my $signed_headers = "";
-    my @finalized_header_keys = sort keys %finalized_headers;
+    my @finalized_header_keys = sort(keys(%finalized_headers));
     my %formatted_finalized_headers = ();
     debug("\n");
     for my $header_key (@finalized_header_keys) {
@@ -8255,7 +8301,7 @@ sub create_signed_request {
     debug("\nAuthorization:".$aws_authorization."\n\n");
     my $request_header_string = "";
     my %compiled_headers = (%{%$canonical_request{"finalized_headers"}}, ( Authorization => $aws_authorization));
-    my @compiled_headers_key = sort keys %compiled_headers;
+    my @compiled_headers_key = sort(keys(%compiled_headers));
     for my $header_key (@compiled_headers_key) {
         $request_header_string = $request_header_string.(lc $header_key).":".($compiled_headers{$header_key});
 
@@ -8265,7 +8311,7 @@ sub create_signed_request {
     }
 
     my %curl_opts = (
-        url => get_encoded_url($url),
+        url => get_full_url($url),
         method => $request_method,
         headers => $request_header_string
     );
@@ -8306,6 +8352,7 @@ sub update_route53_one {
         $aws_region
     ) = @_;
 
+    load_uri_escape();
     my $resource_type = $resource_set_type // ($ip =~ /\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}/ ? "A" : "AAAA");
     my $ttl_to_use = $ttl // 300;
 
@@ -8396,8 +8443,8 @@ sub nic_route53_update {
     debug("\nnic_route53_update---------------------");
 
     foreach my $h (@_) {
-        my $ipv4 = delete $config{$h}{'wantipv4'};
-        my $ipv6 = delete $config{$h}{'wantipv6'};
+        my $ipv4 = delete($config{$h}{'wantipv4'});
+        my $ipv6 = delete($config{$h}{'wantipv6'});
         verbose("UPDATE:", "updating %s", $h);
 
         if ($ipv4) {
